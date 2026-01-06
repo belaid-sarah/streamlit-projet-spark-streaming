@@ -42,13 +42,52 @@ def init_bigquery_client():
     try:
         # Option 1: Credentials depuis Streamlit Secrets (Streamlit Cloud)
         try:
-            if hasattr(st, 'secrets') and 'gcp_service_account' in st.secrets:
-                credentials = service_account.Credentials.from_service_account_info(
-                    st.secrets['gcp_service_account'],
-                    scopes=["https://www.googleapis.com/auth/bigquery"]
-                )
-                client = bigquery.Client(credentials=credentials, project=PROJECT_ID)
-                return client
+            if hasattr(st, 'secrets'):
+                # Essayer d'accéder aux secrets (peut échouer si le fichier TOML est mal formaté)
+                try:
+                    if 'gcp_service_account' in st.secrets:
+                        credentials = service_account.Credentials.from_service_account_info(
+                            st.secrets['gcp_service_account'],
+                            scopes=["https://www.googleapis.com/auth/bigquery"]
+                        )
+                        client = bigquery.Client(credentials=credentials, project=PROJECT_ID)
+                        return client
+                except Exception as secrets_error:
+                    # Erreur de parsing TOML ou autre erreur liée aux secrets
+                    error_msg = str(secrets_error)
+                    if "secrets.toml" in error_msg or "parsing" in error_msg.lower() or "TOML" in error_msg:
+                        st.error("❌ **Erreur dans le fichier secrets.toml**")
+                        st.error(f"**Détails:** {error_msg}")
+                        st.markdown("""
+                        **Le fichier secrets.toml a une erreur de syntaxe TOML.**
+                        
+                        **Pour corriger dans Streamlit Cloud :**
+                        1. Allez dans **Settings** → **Secrets**
+                        2. Vérifiez le format TOML. Voici un exemple correct :
+                        
+                        ```toml
+                        [gcp_service_account]
+                        type = "service_account"
+                        project_id = "spark-streaming-483317"
+                        private_key_id = "VOTRE_PRIVATE_KEY_ID"
+                        private_key = "-----BEGIN PRIVATE KEY-----\\nVOTRE_KEY\\n-----END PRIVATE KEY-----\\n"
+                        client_email = "votre-email@spark-streaming-483317.iam.gserviceaccount.com"
+                        client_id = "VOTRE_CLIENT_ID"
+                        auth_uri = "https://accounts.google.com/o/oauth2/auth"
+                        token_uri = "https://oauth2.googleapis.com/token"
+                        auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+                        client_x509_cert_url = "VOTRE_CERT_URL"
+                        ```
+                        
+                        **Points importants :**
+                        - Utilisez `\\n` (double backslash) pour les sauts de ligne dans `private_key`
+                        - Pas d'espaces avant ou après les `=`
+                        - Les valeurs de chaîne doivent être entre guillemets
+                        - Chaque ligne doit avoir une valeur après le `=`
+                        """)
+                        raise  # Re-lancer pour arrêter l'exécution
+                    # Autre erreur, continuer vers les autres options
+                    pass
         except (AttributeError, KeyError):
             pass  # Continuer vers les autres options
         
@@ -84,25 +123,32 @@ def init_bigquery_client():
         error_msg = str(e)
         st.error(f"❌ Erreur d'authentification BigQuery: {error_msg}")
         
-        if "403" in error_msg or "401" in error_msg or "CREDENTIALS" in error_msg:
+        if "secrets.toml" in error_msg or "parsing" in error_msg.lower() or "TOML" in error_msg:
+            # Déjà géré plus haut, ne rien faire
+            pass
+        elif "403" in error_msg or "401" in error_msg or "CREDENTIALS" in error_msg:
             st.error("**Problème d'authentification détecté**")
             st.markdown("""
             **Solutions possibles :**
             
-            1. **Configurer Application Default Credentials :**
+            1. **Pour Streamlit Cloud - Configurer les secrets :**
+               - Allez dans **Settings** → **Secrets**
+               - Ajoutez la configuration `[gcp_service_account]` (voir `secrets.example.toml`)
+            
+            2. **Pour développement local - Configurer Application Default Credentials :**
                ```powershell
                gcloud auth application-default login
                gcloud config set project spark-streaming-483317
                ```
             
-            2. **OU utiliser un fichier Service Account :**
+            3. **OU utiliser un fichier Service Account :**
                - Téléchargez un fichier JSON de Service Account depuis GCP Console
                - Définissez la variable d'environnement :
                  ```powershell
                  $env:GOOGLE_APPLICATION_CREDENTIALS="C:\\chemin\\vers\\service-account-key.json"
                  ```
             
-            3. **Vérifier que le projet est actif :**
+            4. **Vérifier que le projet est actif :**
                ```powershell
                gcloud config get-value project
                gcloud projects describe spark-streaming-483317
@@ -112,7 +158,7 @@ def init_bigquery_client():
 
 @st.cache_data(ttl=10)  # Cache pendant 10 secondes pour réduire les appels BigQuery
 def fetch_latest_orders(limit=1000):
-    """Récupère les dernières commandes depuis BigQuery"""
+    """Récupère les dernières commandes depuis BigQuery avec les colonnes enrichies"""
     client = init_bigquery_client()
     
     query = f"""
@@ -127,7 +173,17 @@ def fetch_latest_orders(limit=1000):
         review_rating,
         subscription_status,
         payment_method,
-        processed_time
+        processed_time,
+        final_amount_usd,
+        amount_category,
+        customer_segment,
+        satisfaction_level,
+        is_anomaly,
+        estimated_clv,
+        frequency_category,
+        estimated_profit_usd,
+        season_type,
+        loyalty_score
     FROM `{PROJECT_ID}.{DATASET}.{TABLE}`
     ORDER BY processed_time DESC
     LIMIT {limit}
@@ -252,25 +308,43 @@ try:
     if orders_df.empty:
         st.warning("⚠️ Aucune donnée trouvée dans BigQuery. Vérifiez que le Consumer a traité des fichiers.")
     else:
+        # Première ligne de métriques
         col1, col2, col3, col4 = st.columns(4)
         
         total_orders = len(orders_df)
-        total_revenue = orders_df['purchase_amount_usd'].sum()
-        avg_order_value = orders_df['purchase_amount_usd'].mean()
-        avg_rating = orders_df['review_rating'].mean()
+        total_revenue = orders_df['purchase_amount_usd'].sum() if 'purchase_amount_usd' in orders_df.columns else 0
+        avg_order_value = orders_df['purchase_amount_usd'].mean() if 'purchase_amount_usd' in orders_df.columns else 0
+        avg_rating = orders_df['review_rating'].mean() if 'review_rating' in orders_df.columns else 0
         
         col1.metric("Total Commandes", f"{total_orders:,}")
         col2.metric("Revenus Total", f"${total_revenue:,.2f}")
         col3.metric("Panier Moyen", f"${avg_order_value:.2f}")
         col4.metric("Note Moyenne", f"{avg_rating:.2f}")
         
+        # Deuxième ligne de métriques (nouvelles colonnes enrichies)
+        col5, col6, col7, col8 = st.columns(4)
+        
+        # Métriques basées sur les nouvelles colonnes
+        anomalies_count = orders_df['is_anomaly'].sum() if 'is_anomaly' in orders_df.columns else 0
+        total_profit = orders_df['estimated_profit_usd'].sum() if 'estimated_profit_usd' in orders_df.columns else 0
+        vip_customers = len(orders_df[orders_df['customer_segment'] == 'VIP']) if 'customer_segment' in orders_df.columns else 0
+        final_revenue = orders_df['final_amount_usd'].sum() if 'final_amount_usd' in orders_df.columns else total_revenue
+        
+        col5.metric("🚨 Anomalies", f"{anomalies_count:,}", delta=f"{(anomalies_count/total_orders*100):.1f}%" if total_orders > 0 else "0%")
+        col6.metric("💰 Profit Estimé", f"${total_profit:,.2f}")
+        col7.metric("👑 Clients VIP", f"{vip_customers:,}")
+        col8.metric("💵 Revenus Finaux", f"${final_revenue:,.2f}")
+        
         # Graphiques dans des onglets
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
             "📈 Vue d'ensemble", 
             "👥 Par Âge", 
             "⚧️ Par Genre", 
             "🌍 Par Localisation",
-            "🔀 Combinaisons"
+            "🔀 Combinaisons",
+            "👑 Clients VIP & Premium",
+            "🚨 Détection d'Anomalies",
+            "📊 Analyse Avancée"
         ])
         
         with tab1:
@@ -584,6 +658,293 @@ try:
             else:
                 st.info("Les vues analytiques ne sont pas encore disponibles.")
         
+        with tab6:
+            st.subheader("👑 Analyse des Clients VIP avec Achats Premium")
+            
+            # Filtrer les clients VIP avec achats Premium
+            if 'customer_segment' in orders_df.columns and 'amount_category' in orders_df.columns:
+                vip_premium_df = orders_df[(orders_df['customer_segment'] == 'VIP') & 
+                                          (orders_df['amount_category'] == 'Premium')].copy()
+                
+                if not vip_premium_df.empty:
+                    col_vip1, col_vip2 = st.columns(2)
+                    
+                    with col_vip1:
+                        st.metric("Nombre de transactions VIP Premium", len(vip_premium_df))
+                        st.metric("Revenus VIP Premium", f"${vip_premium_df['purchase_amount_usd'].sum():,.2f}")
+                    
+                    with col_vip2:
+                        avg_vip_premium = vip_premium_df['purchase_amount_usd'].mean()
+                        avg_clv_vip = vip_premium_df['estimated_clv'].mean() if 'estimated_clv' in vip_premium_df.columns else 0
+                        st.metric("Panier Moyen VIP Premium", f"${avg_vip_premium:,.2f}")
+                        st.metric("CLV Moyen", f"${avg_clv_vip:,.2f}")
+                    
+                    # Répartition par catégorie pour VIP Premium
+                    st.markdown("### Répartition par Catégorie")
+                    vip_category = vip_premium_df.groupby('category').agg({
+                        'purchase_amount_usd': ['count', 'sum', 'mean'],
+                        'estimated_clv': 'mean' if 'estimated_clv' in vip_premium_df.columns else 'count'
+                    }).reset_index()
+                    vip_category.columns = ['category', 'count', 'total_revenue', 'avg_amount', 'avg_clv']
+                    vip_category = vip_category.sort_values('total_revenue', ascending=False)
+                    
+                    col_vip3, col_vip4 = st.columns(2)
+                    
+                    with col_vip3:
+                        fig_vip1 = px.bar(
+                            vip_category,
+                            x='category',
+                            y='total_revenue',
+                            title="Revenus par Catégorie (VIP Premium)",
+                            labels={'total_revenue': 'Revenus (USD)', 'category': 'Catégorie'},
+                            color='total_revenue',
+                            color_continuous_scale='Gold'
+                        )
+                        fig_vip1.update_xaxes(tickangle=45)
+                        st.plotly_chart(fig_vip1, use_container_width=True)
+                    
+                    with col_vip4:
+                        if 'loyalty_score' in vip_premium_df.columns:
+                            loyalty_dist = vip_premium_df['loyalty_score'].value_counts()
+                            fig_vip2 = px.pie(
+                                values=loyalty_dist.values,
+                                names=loyalty_dist.index,
+                                title="Répartition par Score de Fidélité (VIP Premium)",
+                                hole=0.4
+                            )
+                            st.plotly_chart(fig_vip2, use_container_width=True)
+                    
+                    st.markdown("### Tableau détaillé VIP Premium")
+                    display_cols_vip = ['processed_time', 'customer_id', 'category', 'item_purchased',
+                                       'purchase_amount_usd', 'estimated_clv', 'loyalty_score', 
+                                       'frequency_category', 'location']
+                    available_cols_vip = [col for col in display_cols_vip if col in vip_premium_df.columns]
+                    st.dataframe(vip_premium_df[available_cols_vip].head(100), use_container_width=True, hide_index=True)
+                else:
+                    st.info("Aucune transaction VIP Premium trouvée.")
+            else:
+                st.warning("Les colonnes customer_segment et amount_category ne sont pas disponibles.")
+        
+        with tab7:
+            st.subheader("🚨 Détection des Transactions Suspectes (Anomalies)")
+            
+            if 'is_anomaly' in orders_df.columns:
+                anomalies_df = orders_df[orders_df['is_anomaly'] == True].copy()
+                
+                if not anomalies_df.empty:
+                    col_anom1, col_anom2, col_anom3 = st.columns(3)
+                    
+                    with col_anom1:
+                        st.metric("🚨 Transactions Anormales", len(anomalies_df))
+                    with col_anom2:
+                        anomaly_rate = (len(anomalies_df) / len(orders_df)) * 100 if len(orders_df) > 0 else 0
+                        st.metric("Taux d'Anomalies", f"{anomaly_rate:.2f}%")
+                    with col_anom3:
+                        st.metric("Montant Total Anormal", f"${anomalies_df['purchase_amount_usd'].sum():,.2f}")
+                    
+                    st.markdown("### Distribution des Anomalies")
+                    col_anom4, col_anom5 = st.columns(2)
+                    
+                    with col_anom4:
+                        # Anomalies par catégorie
+                        anom_by_category = anomalies_df.groupby('category')['purchase_amount_usd'].agg(['count', 'sum']).reset_index()
+                        anom_by_category.columns = ['category', 'count', 'total']
+                        anom_by_category = anom_by_category.sort_values('total', ascending=False)
+                        
+                        fig_anom1 = px.bar(
+                            anom_by_category,
+                            x='category',
+                            y='total',
+                            title="Montant des Anomalies par Catégorie",
+                            labels={'total': 'Montant (USD)', 'category': 'Catégorie'},
+                            color='total',
+                            color_continuous_scale='Reds'
+                        )
+                        fig_anom1.update_xaxes(tickangle=45)
+                        st.plotly_chart(fig_anom1, use_container_width=True)
+                    
+                    with col_anom5:
+                        # Distribution des montants d'anomalies
+                        fig_anom2 = px.histogram(
+                            anomalies_df,
+                            x='purchase_amount_usd',
+                            nbins=30,
+                            title="Distribution des Montants d'Anomalies",
+                            labels={'purchase_amount_usd': 'Montant (USD)', 'count': 'Nombre'},
+                            color_discrete_sequence=['red']
+                        )
+                        st.plotly_chart(fig_anom2, use_container_width=True)
+                    
+                    # Anomalies par localisation
+                    if 'location' in anomalies_df.columns:
+                        anom_by_location = anomalies_df.groupby('location')['purchase_amount_usd'].agg(['count', 'sum']).reset_index()
+                        anom_by_location.columns = ['location', 'count', 'total']
+                        anom_by_location = anom_by_location.sort_values('total', ascending=False).head(15)
+                        
+                        fig_anom3 = px.bar(
+                            anom_by_location,
+                            x='location',
+                            y='count',
+                            title="Nombre d'Anomalies par Localisation (Top 15)",
+                            labels={'count': "Nombre d'anomalies", 'location': 'Localisation'},
+                            color='count',
+                            color_continuous_scale='Oranges'
+                        )
+                        fig_anom3.update_xaxes(tickangle=45)
+                        st.plotly_chart(fig_anom3, use_container_width=True)
+                    
+                    st.markdown("### Tableau des Anomalies")
+                    display_cols_anom = ['processed_time', 'customer_id', 'category', 'purchase_amount_usd',
+                                        'amount_category', 'location', 'customer_segment', 'payment_method']
+                    available_cols_anom = [col for col in display_cols_anom if col in anomalies_df.columns]
+                    st.dataframe(anomalies_df[available_cols_anom], use_container_width=True, hide_index=True)
+                else:
+                    st.success("✅ Aucune anomalie détectée dans les données.")
+            else:
+                st.warning("La colonne is_anomaly n'est pas disponible.")
+        
+        with tab8:
+            st.subheader("📊 Analyse Avancée - Segments & Satisfaction")
+            
+            # Revenu par segment client
+            st.markdown("### 💰 Revenu Total par Segment Client")
+            if 'customer_segment' in orders_df.columns:
+                revenue_by_segment = orders_df.groupby('customer_segment').agg({
+                    'purchase_amount_usd': ['sum', 'mean', 'count'],
+                    'estimated_profit_usd': 'sum' if 'estimated_profit_usd' in orders_df.columns else 'count'
+                }).reset_index()
+                revenue_by_segment.columns = ['segment', 'total_revenue', 'avg_revenue', 'count', 'total_profit']
+                revenue_by_segment = revenue_by_segment.sort_values('total_revenue', ascending=False)
+                
+                col_adv1, col_adv2 = st.columns(2)
+                
+                with col_adv1:
+                    fig_seg1 = px.bar(
+                        revenue_by_segment,
+                        x='segment',
+                        y='total_revenue',
+                        title="Revenus Totaux par Segment",
+                        labels={'total_revenue': 'Revenus (USD)', 'segment': 'Segment Client'},
+                        color='total_revenue',
+                        color_continuous_scale='Blues'
+                    )
+                    st.plotly_chart(fig_seg1, use_container_width=True)
+                
+                with col_adv2:
+                    fig_seg2 = px.bar(
+                        revenue_by_segment,
+                        x='segment',
+                        y='count',
+                        title="Nombre de Commandes par Segment",
+                        labels={'count': 'Nombre de commandes', 'segment': 'Segment Client'},
+                        color='segment',
+                        color_discrete_sequence=px.colors.qualitative.Set3
+                    )
+                    st.plotly_chart(fig_seg2, use_container_width=True)
+                
+                st.dataframe(revenue_by_segment, use_container_width=True, hide_index=True)
+            else:
+                st.warning("La colonne customer_segment n'est pas disponible.")
+            
+            st.markdown("---")
+            
+            # Satisfaction par catégorie de produit
+            st.markdown("### 😊 Analyse de Satisfaction par Catégorie")
+            if 'satisfaction_level' in orders_df.columns and 'category' in orders_df.columns:
+                satisfaction_by_category = orders_df.groupby(['category', 'satisfaction_level']).agg({
+                    'purchase_amount_usd': ['count', 'sum']
+                }).reset_index()
+                satisfaction_by_category.columns = ['category', 'satisfaction_level', 'count', 'revenue']
+                
+                col_adv3, col_adv4 = st.columns(2)
+                
+                with col_adv3:
+                    # Heatmap satisfaction par catégorie
+                    pivot_satisfaction = satisfaction_by_category.pivot_table(
+                        index='category',
+                        columns='satisfaction_level',
+                        values='count',
+                        aggfunc='sum',
+                        fill_value=0
+                    )
+                    
+                    # Trier les niveaux de satisfaction dans un ordre logique
+                    satisfaction_order = ['Very Satisfied', 'Satisfied', 'Neutral', 'Dissatisfied']
+                    available_levels = [level for level in satisfaction_order if level in pivot_satisfaction.columns]
+                    if available_levels:
+                        pivot_satisfaction = pivot_satisfaction[available_levels]
+                    
+                    fig_sat1 = px.imshow(
+                        pivot_satisfaction,
+                        labels=dict(x="Niveau de Satisfaction", y="Catégorie", color="Nombre de commandes"),
+                        title="Heatmap: Satisfaction par Catégorie",
+                        color_continuous_scale='RdYlGn',
+                        aspect="auto"
+                    )
+                    st.plotly_chart(fig_sat1, use_container_width=True)
+                
+                with col_adv4:
+                    # Répartition de la satisfaction globale
+                    satisfaction_dist = orders_df['satisfaction_level'].value_counts()
+                    fig_sat2 = px.pie(
+                        values=satisfaction_dist.values,
+                        names=satisfaction_dist.index,
+                        title="Répartition Globale de la Satisfaction",
+                        hole=0.4,
+                        color_discrete_sequence=px.colors.sequential.RdYlGn
+                    )
+                    st.plotly_chart(fig_sat2, use_container_width=True)
+                
+                # Graphique en barres groupées
+                fig_sat3 = px.bar(
+                    satisfaction_by_category,
+                    x='category',
+                    y='count',
+                    color='satisfaction_level',
+                    title="Nombre de Commandes par Catégorie et Niveau de Satisfaction",
+                    labels={'count': 'Nombre de commandes', 'category': 'Catégorie', 'satisfaction_level': 'Satisfaction'},
+                    barmode='group'
+                )
+                fig_sat3.update_xaxes(tickangle=45)
+                st.plotly_chart(fig_sat3, use_container_width=True)
+                
+                st.dataframe(satisfaction_by_category.sort_values('count', ascending=False), use_container_width=True, hide_index=True)
+            else:
+                st.warning("Les colonnes satisfaction_level et category ne sont pas disponibles.")
+            
+            st.markdown("---")
+            
+            # Analyses supplémentaires
+            st.markdown("### 📈 Analyses Supplémentaires")
+            
+            col_adv5, col_adv6 = st.columns(2)
+            
+            with col_adv5:
+                if 'amount_category' in orders_df.columns:
+                    st.markdown("#### Répartition par Catégorie de Montant")
+                    amount_cat_dist = orders_df['amount_category'].value_counts()
+                    fig_amt = px.bar(
+                        x=amount_cat_dist.index,
+                        y=amount_cat_dist.values,
+                        title="Répartition des Commandes par Catégorie de Montant",
+                        labels={'x': 'Catégorie de Montant', 'y': 'Nombre de commandes'},
+                        color=amount_cat_dist.values,
+                        color_continuous_scale='Viridis'
+                    )
+                    st.plotly_chart(fig_amt, use_container_width=True)
+            
+            with col_adv6:
+                if 'frequency_category' in orders_df.columns:
+                    st.markdown("#### Répartition par Fréquence")
+                    freq_dist = orders_df['frequency_category'].value_counts()
+                    fig_freq = px.pie(
+                        values=freq_dist.values,
+                        names=freq_dist.index,
+                        title="Répartition par Catégorie de Fréquence",
+                        hole=0.4
+                    )
+                    st.plotly_chart(fig_freq, use_container_width=True)
+        
         # Table des dernières commandes
         st.markdown("---")
         st.subheader("📋 Dernières commandes (streaming)")
@@ -612,9 +973,11 @@ try:
         if locations_filter:
             filtered_df = filtered_df[filtered_df['location'].isin(locations_filter)]
         
-        # Afficher le tableau
+        # Afficher le tableau (inclure les nouvelles colonnes enrichies)
         display_columns = ['processed_time', 'customer_id', 'category', 'item_purchased', 
-                          'purchase_amount_usd', 'location', 'review_rating']
+                          'purchase_amount_usd', 'final_amount_usd', 'amount_category',
+                          'customer_segment', 'satisfaction_level', 'is_anomaly', 
+                          'location', 'review_rating']
         available_columns = [col for col in display_columns if col in filtered_df.columns]
         
         st.dataframe(
