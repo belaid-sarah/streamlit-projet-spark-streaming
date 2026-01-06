@@ -502,7 +502,7 @@ try:
                         title="Note moyenne par tranche d'âge",
                         labels={'avg_rating': 'Note moyenne', 'age_bucket': 'Tranche d\'âge'},
                         color='avg_rating',
-                        color_continuous_scale='RdYlGn'
+                        color_continuous_scale='Viridis'
                     )
                     st.plotly_chart(fig_age3, use_container_width=True)
                 
@@ -897,7 +897,7 @@ try:
                         pivot_satisfaction,
                         labels=dict(x="Niveau de Satisfaction", y="Catégorie", color="Nombre de commandes"),
                         title="Heatmap: Satisfaction par Catégorie",
-                        color_continuous_scale='RdYlGn',
+                        color_continuous_scale='RdYlBu',
                         aspect="auto"
                     )
                     st.plotly_chart(fig_sat1, use_container_width=True)
