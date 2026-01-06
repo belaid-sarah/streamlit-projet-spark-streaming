@@ -193,7 +193,26 @@ def fetch_latest_orders(limit=1000):
         df = client.query(query).to_dataframe()
         return df
     except Exception as e:
-        st.error(f"Erreur lors de la récupération des commandes: {str(e)}")
+        error_msg = str(e)
+        if "db-dtypes" in error_msg.lower():
+            st.error("❌ **Package manquant : db-dtypes**")
+            st.markdown("""
+            **Pour résoudre ce problème :**
+            
+            **Si vous êtes sur Streamlit Cloud :**
+            1. Vérifiez que vous avez poussé les modifications de `requirements.txt` sur GitHub
+            2. Attendez que Streamlit Cloud redéploie automatiquement (quelques minutes)
+            3. Vérifiez les logs pour confirmer l'installation du package
+            
+            **Si vous testez en local :**
+            ```bash
+            pip install db-dtypes
+            # Ou réinstaller toutes les dépendances :
+            pip install -r requirements.txt
+            ```
+            """)
+        else:
+            st.error(f"Erreur lors de la récupération des commandes: {error_msg}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=30)  # Cache pendant 30 secondes
