@@ -905,12 +905,20 @@ try:
                 with col_adv4:
                     # Répartition de la satisfaction globale
                     satisfaction_dist = orders_df['satisfaction_level'].value_counts()
+                    # Utiliser une palette de couleurs adaptée pour la satisfaction (vert = bon, rouge = mauvais)
+                    satisfaction_colors = {
+                        'Very Satisfied': '#2ca02c',  # Vert foncé
+                        'Satisfied': '#98df8a',       # Vert clair
+                        'Neutral': '#ffbb78',         # Orange
+                        'Dissatisfied': '#d62728'     # Rouge
+                    }
+                    color_map = [satisfaction_colors.get(name, '#1f77b4') for name in satisfaction_dist.index]
                     fig_sat2 = px.pie(
                         values=satisfaction_dist.values,
                         names=satisfaction_dist.index,
                         title="Répartition Globale de la Satisfaction",
                         hole=0.4,
-                        color_discrete_sequence=px.colors.sequential.RdYlGn
+                        color_discrete_sequence=color_map
                     )
                     st.plotly_chart(fig_sat2, use_container_width=True)
                 
